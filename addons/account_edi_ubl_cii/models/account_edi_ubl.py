@@ -2,7 +2,7 @@ import io
 import logging
 
 from odoo import _, models
-from odoo.tools import frozendict, html2plaintext, pdf
+from odoo.tools import frozendict, html2plaintext, pdf, str2bool
 from odoo.addons.account_edi_ubl_cii.models.account_edi_common import (
     FloatFmt,
     GST_COUNTRY_CODES,
@@ -18,13 +18,22 @@ class AccountEdiUBL(models.AbstractModel):
 
     def _import_attachments(self, invoice, tree):
         """ EXTENDS 'account_edi_common': ATTEMPTS to create a PDF attachment when the XML file doesn't provide one."""
-
+        IrConfigParam = self.env['ir.config_parameter'].sudo()
+        disable_pdf_in_xml = str2bool(IrConfigParam.get_param("account_edi_ubl_cii.disable_pdf_in_xml", 'False'))
         additional_docs = super()._import_attachments(invoice, tree)
-        if additional_docs or invoice.message_main_attachment_id or not invoice.is_purchase_document():
+        if (
+            additional_docs or
+            invoice.message_main_attachment_id or
+            not invoice.is_purchase_document() or
+            disable_pdf_in_xml
+        ):
             return additional_docs
         try:
             invoices_by_odoo_xmlid = 'account_edi_ubl_cii.action_report_account_invoices_generated_by_odoo'
-            report_xmlid = invoices_by_odoo_xmlid if self.env.ref(invoices_by_odoo_xmlid, raise_if_not_found=False) else 'account.account_invoices'
+            if not self.env.ref(invoices_by_odoo_xmlid, raise_if_not_found=False):
+                _logger.warning("Missing template while generating substitute PDF attachment for invoice %s", invoice.id)
+                return additional_docs
+            report_xmlid = invoices_by_odoo_xmlid
 
             pdf_raw, pdf_extension = self.env['ir.actions.report'] \
                         ._render_qweb_pdf(report_xmlid, res_ids=[invoice.id])
@@ -2130,7 +2139,7 @@ class AccountEdiUBL(models.AbstractModel):
         )
         values_per_grouping_key = AccountTax._aggregate_base_lines_aggregated_values(base_lines_aggregated_values)
         expected_tax_inclusive_amount = sum(
-             values['base_amount_currency'] + values['tax_amount_currency']
+             values['total_excluded_currency'] + values['tax_amount_currency']
              for values in values_per_grouping_key.values()
         )
 
